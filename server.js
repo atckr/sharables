@@ -380,7 +380,7 @@ app.get('/api/restaurants/:id', async (req, res) => {
     });
   }
   
-  console.log('🏪 Backend: Restaurant details request for ID:', id);
+  console.log('🏪 Backend: Restaurant details request for Google Place ID:', id);
   
   try {
     const apiUrl = `https://places.googleapis.com/v1/places/${id}`;
@@ -480,7 +480,7 @@ app.get('/api/restaurants/:id/menu', async (req, res) => {
     const apiUrl = `https://places.googleapis.com/v1/places/${id}`;
     const headers = {
       'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
-      'X-Goog-FieldMask': 'id,displayName,types,reviews'
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,rating,userRatingCount,priceLevel,types,websiteUri,nationalPhoneNumber,photos,businessStatus,regularOpeningHours,reviews'
     };
     
     const response = await axios.get(apiUrl, { headers, timeout: 10000 });
@@ -492,18 +492,14 @@ app.get('/api/restaurants/:id/menu', async (req, res) => {
       reviewCount: restaurant.reviews?.length || 0
     });
     
-    // Generate menu using Cohere AI based on reviews
+    // Generate menu using Cohere AI based on reviews (with caching)
     const menu = await generateMenuFromReviews(restaurant);
     
-    // Save the generated menu to Firestore for future use
-    try {
-      await saveCachedMenu(id, menu);
-      console.log('💾 Backend: Menu saved to Firestore cache');
-    } catch (saveError) {
-      console.error('⚠️ Backend: Failed to save menu to cache:', saveError.message);
-    }
-    
-    console.log('✅ Backend: AI-generated menu created successfully');
+    console.log('✅ Backend: Menu ready (cached or generated):', {
+      source: menu.source,
+      reviewsAnalyzed: menu.reviewsAnalyzed,
+      lastUpdated: menu.lastUpdated
+    });
     res.json(menu);
     
   } catch (error) {
@@ -572,104 +568,93 @@ async function generateMenuFromReviews(restaurant) {
   const name = restaurant.displayName?.text || 'Restaurant';
   const types = restaurant.types || [];
   const reviews = restaurant.reviews || [];
+  const restaurantId = restaurant.id; // This is the real Google Place ID
   
-  console.log('🤖 Backend: Generating AI menu from reviews for:', name);
+  console.log('🤖 Backend: Processing menu for:', name, 'ID:', restaurantId);
+  
+  try {
+    // Check if we have cached menu data
+    const cachedMenu = await loadMenuFromFirestore(restaurantId);
+    
+    if (cachedMenu) {
+      console.log('✅ Backend: Found cached menu, analyzing newest review...');
+      
+      if (reviews.length === 0) {
+        console.log('✅ Backend: No reviews available, using cached menu');
+        return cachedMenu;
+      }
+      
+      // Analyze only the newest review first for efficiency
+      const newestReview = reviews[0];
+      const newItems = await extractMenuItemsFromSingleReview(newestReview, name, types);
+      
+      if (newItems && Object.keys(newItems).length > 0) {
+        console.log('🔍 Backend: Found potential new items in newest review, checking similarity...');
+        
+        // Check if any new items are truly new using similarity matching
+        const trulyNewItems = await findTrulyNewItems(newItems, cachedMenu.menu);
+        
+        if (Object.keys(trulyNewItems).length > 0) {
+          console.log('🆕 Backend: Found truly new items, processing next 4 reviews...');
+          
+          // Process next 4 reviews for additional items
+          const additionalReviews = reviews.slice(1, 5);
+          const additionalItems = await extractMenuItemsFromReviews(additionalReviews, name, types);
+          
+          // Merge all new items
+          const allNewItems = { ...trulyNewItems, ...additionalItems };
+          const updatedMenu = { ...cachedMenu.menu, ...allNewItems };
+          
+          const menuData = {
+            restaurantId: restaurantId,
+            restaurantName: name,
+            menuType: 'ai-generated',
+            source: 'cohere-reviews-incremental',
+            reviewsAnalyzed: cachedMenu.reviewsAnalyzed + 5,
+            lastUpdated: new Date().toISOString(),
+            menu: updatedMenu
+          };
+          
+          await saveMenuToFirestore(restaurantId, menuData);
+          return menuData;
+        } else {
+          console.log('✅ Backend: No truly new items found, using cached menu');
+          return cachedMenu;
+        }
+      } else {
+        console.log('✅ Backend: No new items in newest review, using cached menu');
+        return cachedMenu;
+      }
+    }
+  } catch (error) {
+    console.log('⚠️ Backend: Cache check failed, generating fresh menu:', error.message);
+  }
+  
+  console.log('🤖 Backend: First time processing restaurant, using 5 newest reviews for efficiency');
   
   try {
     // If we have reviews, use Cohere to extract menu items
     if (reviews.length > 0 && COHERE_API_KEY) {
-      // Take the most recent 39 reviews (or all if less than 39)
-      const recentReviews = reviews.slice(0, 39);
-      console.log(`📝 Backend: Processing ${recentReviews.length} reviews for menu extraction`);
+      // For new restaurants, only use 5 newest reviews for efficiency
+      const recentReviews = reviews.slice(0, 5);
+      console.log(`📝 Backend: Processing ${recentReviews.length} reviews for initial menu extraction`);
       
-      // Combine review texts
-      const reviewTexts = recentReviews
-        .map(review => review.text?.text || '')
-        .filter(text => text.length > 0)
-        .join(' ');
+      const menuItems = await extractMenuItemsFromReviews(recentReviews, name, types);
       
-      if (reviewTexts.length > 0) {
-        const prompt = `Analyze these restaurant reviews and extract menu items mentioned by customers. Create a menu with item names and descriptions based ONLY on what customers actually said in their reviews.
-
-Restaurant Name: ${name}
-Restaurant Type: ${types.join(', ')}
-
-Customer Reviews:
-${reviewTexts}
-
-Based on these reviews, create a JSON menu with the following structure:
-{
-  "menu": {
-    "Category Name": [
-      {
-        "name": "Item Name",
-        "description": "Brief description (max 50 words) based ONLY on what customers said in reviews about this item",
-        "available": true,
-        "popular": true/false (if mentioned frequently by multiple customers),
-        "recommended": true/false (if customers specifically praised or recommended it)
-      }
-    ]
-  }
-}
-
-IMPORTANT RULES:
-1. Only include items that are explicitly mentioned in the customer reviews
-2. Descriptions must be based ONLY on what customers actually wrote about the item
-3. Keep descriptions concise and under 50 words each
-4. Do NOT include any pricing information
-5. Do NOT make up descriptions - only use customer feedback
-5. Popular = mentioned by multiple customers or frequently mentioned
-6. Recommended = customers specifically praised, loved, or recommended the item
-7. Use appropriate menu categories (Appetizers, Main Courses, Desserts, Beverages, etc.)
-8. Only include items that are clearly food/drink items
-
-Return only the JSON object, no additional text.`;
-
-        console.log('🚀 Backend: Sending request to Cohere API...');
-        console.log('📝 Backend: Prompt length:', prompt.length, 'characters');
-        console.log('📝 Backend: Review text length:', reviewTexts.length, 'characters');
+      if (menuItems && Object.keys(menuItems).length > 0) {
+        const menuData = {
+          restaurantId: restaurantId,
+          restaurantName: name,
+          menuType: 'ai-generated',
+          source: 'cohere-reviews-initial',
+          reviewsAnalyzed: recentReviews.length,
+          lastUpdated: new Date().toISOString(),
+          menu: menuItems
+        };
         
-        if (!COHERE_API_KEY) {
-          throw new Error('Cohere API key not configured');
-        }
-        
-        const response = await cohere.generate({
-          model: 'command',
-          prompt: prompt,
-          max_tokens: 1200,
-          temperature: 0.3,
-          stop_sequences: []
-        });
-        
-        const generatedText = response.generations[0].text.trim();
-        console.log('📊 Backend: Cohere response received');
-        console.log('📄 Backend: Generated text preview:', generatedText.substring(0, 200) + '...');
-        
-        try {
-          // Try to parse the JSON response
-          const menuData = JSON.parse(generatedText);
-          
-          if (menuData.menu && typeof menuData.menu === 'object') {
-            console.log('✅ Backend: Successfully parsed AI-generated menu');
-            
-            return {
-              restaurantId: restaurant.id,
-              restaurantName: name,
-              menuType: 'ai-generated',
-              source: 'cohere-reviews',
-              reviewsAnalyzed: recentReviews.length,
-              lastUpdated: new Date().toISOString(),
-              menu: menuData.menu
-            };
-          } else {
-            throw new Error('Invalid menu structure from AI');
-          }
-        } catch (parseError) {
-          console.error('❌ Backend: Failed to parse AI response:', parseError.message);
-          console.log('🔍 Backend: AI Response:', generatedText);
-          // Fall back to template-based generation
-          return generateMenuByType(restaurant);
-        }
+        // Save to Firestore cache
+        await saveMenuToFirestore(restaurantId, menuData);
+        return menuData;
       }
     }
     
@@ -684,6 +669,167 @@ Return only the JSON object, no additional text.`;
   }
 }
 
+// Extract menu items from reviews and return as dictionary
+async function extractMenuItemsFromReviews(reviews, restaurantName, restaurantTypes) {
+  try {
+    const reviewTexts = reviews
+      .map(review => review.text?.text || '')
+      .filter(text => text.length > 0)
+      .join(' ');
+    
+    if (reviewTexts.length === 0) return {};
+    
+    const prompt = `Analyze these restaurant reviews and extract menu items mentioned by customers.
+
+Restaurant: ${restaurantName}
+Type: ${restaurantTypes.join(', ')}
+
+Reviews:
+${reviewTexts}
+
+Extract menu items and return as a simple dictionary where key=item_name and value=description:
+{
+  "Item Name": "Brief description based on customer feedback (max 30 words)",
+  "Another Item": "Description from reviews"
+}
+
+Rules:
+1. Only items explicitly mentioned in reviews
+2. Descriptions from customer feedback only
+3. No pricing information
+4. Max 30 words per description
+5. Food/drink items only
+
+Return only JSON dictionary, no additional text.`;
+    
+    const response = await cohere.generate({
+      model: 'command',
+      prompt: prompt,
+      max_tokens: 800,
+      temperature: 0.2,
+      stop_sequences: []
+    });
+    
+    const generatedText = response.generations[0].text.trim();
+    const menuItems = JSON.parse(generatedText);
+    
+    console.log('🍽️ Backend: Extracted', Object.keys(menuItems).length, 'menu items');
+    return menuItems;
+    
+  } catch (error) {
+    console.error('❌ Backend: Error extracting menu items:', error.message);
+    return {};
+  }
+}
+
+// Extract menu items from a single review
+async function extractMenuItemsFromSingleReview(review, restaurantName, restaurantTypes) {
+  try {
+    const reviewText = review.text?.text || '';
+    if (reviewText.length === 0) return {};
+    
+    const prompt = `Analyze this single restaurant review and extract any menu items mentioned.
+
+Restaurant: ${restaurantName}
+Type: ${restaurantTypes.join(', ')}
+
+Review:
+${reviewText}
+
+Extract menu items as dictionary:
+{
+  "Item Name": "Brief description from review (max 20 words)"
+}
+
+Rules:
+1. Only items explicitly mentioned
+2. Max 20 words per description
+3. Return {} if no items found
+
+Return only JSON, no additional text.`;
+    
+    const response = await cohere.generate({
+      model: 'command',
+      prompt: prompt,
+      max_tokens: 400,
+      temperature: 0.1,
+      stop_sequences: []
+    });
+    
+    const generatedText = response.generations[0].text.trim();
+    const menuItems = JSON.parse(generatedText);
+    
+    console.log('🔍 Backend: Found', Object.keys(menuItems).length, 'items in single review');
+    return menuItems;
+    
+  } catch (error) {
+    console.error('❌ Backend: Error extracting from single review:', error.message);
+    return {};
+  }
+}
+
+// Find truly new items using similarity matching
+async function findTrulyNewItems(newItems, existingMenu) {
+  try {
+    const existingItemNames = Object.keys(existingMenu);
+    const newItemNames = Object.keys(newItems);
+    
+    if (existingItemNames.length === 0) {
+      return newItems; // All items are new if no existing menu
+    }
+    
+    const trulyNewItems = {};
+    
+    for (const newItemName of newItemNames) {
+      // Use Cohere to check similarity with existing items
+      const isNew = await isItemTrulyNew(newItemName, existingItemNames);
+      if (isNew) {
+        trulyNewItems[newItemName] = newItems[newItemName];
+      }
+    }
+    
+    console.log('🆕 Backend: Found', Object.keys(trulyNewItems).length, 'truly new items out of', newItemNames.length);
+    return trulyNewItems;
+    
+  } catch (error) {
+    console.error('❌ Backend: Error finding truly new items:', error.message);
+    return newItems; // Return all items if similarity check fails
+  }
+}
+
+// Check if an item is truly new using similarity matching
+async function isItemTrulyNew(newItemName, existingItemNames) {
+  try {
+    // Create embeddings for comparison
+    const allItems = [newItemName, ...existingItemNames];
+    
+    const response = await cohere.embed({
+      texts: allItems,
+      model: 'embed-english-v3.0',
+      input_type: 'search_document'
+    });
+    
+    const embeddings = response.embeddings;
+    const newItemEmbedding = embeddings[0];
+    
+    // Check similarity with each existing item
+    for (let i = 1; i < embeddings.length; i++) {
+      const similarity = cosineSimilarity(newItemEmbedding, embeddings[i]);
+      if (similarity > 0.8) { // High similarity threshold
+        console.log(`🔄 Backend: "${newItemName}" is similar to "${existingItemNames[i-1]}" (${similarity.toFixed(3)})`);
+        return false; // Not truly new
+      }
+    }
+    
+    return true; // Truly new item
+    
+  } catch (error) {
+    console.error('❌ Backend: Error checking item similarity:', error.message);
+    return true; // Assume new if similarity check fails
+  }
+
+}
+
 // Generate menu based on restaurant type
 function generateMenuByType(restaurant) {
   const name = restaurant.displayName?.text || 'Restaurant';
@@ -691,81 +837,61 @@ function generateMenuByType(restaurant) {
   
   console.log('🏷️ Backend: Restaurant types:', types);
   
-  // Menu templates based on restaurant type
+  // Menu templates based on restaurant type - converted to dictionary format
   const menuTemplates = {
     cafe: {
-      'Hot Beverages': [
-        { name: 'Espresso', description: 'Rich, bold espresso shot' },
-        { name: 'Cappuccino', description: 'Espresso with steamed milk and foam' },
-        { name: 'Latte', description: 'Smooth espresso with steamed milk' },
-        { name: 'Americano', description: 'Espresso with hot water' },
-        { name: 'Hot Chocolate', description: 'Rich chocolate with whipped cream' }
-      ],
-      'Cold Beverages': [
-        { name: 'Iced Coffee', description: 'Freshly brewed coffee over ice' },
-        { name: 'Cold Brew', description: 'Smooth cold-brewed coffee' },
-        { name: 'Iced Latte', description: 'Espresso with cold milk over ice' },
-        { name: 'Frappuccino', description: 'Blended coffee drink with ice' }
-      ],
-      'Food': [
-        { name: 'Croissant', description: 'Buttery, flaky pastry' },
-        { name: 'Bagel with Cream Cheese', description: 'Fresh bagel with cream cheese' },
-        { name: 'Avocado Toast', description: 'Smashed avocado on artisan bread' },
-        { name: 'Breakfast Sandwich', description: 'Egg, cheese, and choice of meat' },
-        { name: 'Muffin', description: 'Freshly baked daily' },
-        { name: 'Scone', description: 'Traditional British pastry' }
-      ]
+      'Espresso': 'Rich, bold espresso shot',
+      'Cappuccino': 'Espresso with steamed milk and foam',
+      'Latte': 'Smooth espresso with steamed milk',
+      'Americano': 'Espresso with hot water',
+      'Hot Chocolate': 'Rich chocolate with whipped cream',
+      'Iced Coffee': 'Freshly brewed coffee over ice',
+      'Cold Brew': 'Smooth cold-brewed coffee',
+      'Iced Latte': 'Espresso with cold milk over ice',
+      'Frappuccino': 'Blended coffee drink with ice',
+      'Croissant': 'Buttery, flaky pastry',
+      'Bagel with Cream Cheese': 'Fresh bagel with cream cheese',
+      'Avocado Toast': 'Smashed avocado on artisan bread',
+      'Breakfast Sandwich': 'Egg, cheese, and choice of meat',
+      'Muffin': 'Freshly baked daily',
+      'Scone': 'Traditional British pastry'
     },
     restaurant: {
-      'Appetizers': [
-        { name: 'Bruschetta', description: 'Toasted bread with tomatoes and basil' },
-        { name: 'Calamari', description: 'Crispy fried squid with marinara' },
-        { name: 'Wings', description: 'Buffalo or BBQ sauce' },
-        { name: 'Spinach Dip', description: 'Creamy spinach dip with tortilla chips' },
-        { name: 'Mozzarella Sticks', description: 'Breaded mozzarella with marinara' }
-      ],
-      'Main Courses': [
-        { name: 'Grilled Salmon', description: 'Atlantic salmon with lemon herb butter' },
-        { name: 'Ribeye Steak', description: '12oz ribeye with garlic mashed potatoes' },
-        { name: 'Chicken Parmesan', description: 'Breaded chicken with marinara and mozzarella' },
-        { name: 'Pasta Primavera', description: 'Fresh vegetables with penne pasta' },
-        { name: 'Fish & Chips', description: 'Beer-battered cod with fries' },
-        { name: 'Burger', description: 'Angus beef with lettuce, tomato, onion' }
-      ],
-      'Desserts': [
-        { name: 'Tiramisu', description: 'Classic Italian dessert' },
-        { name: 'Cheesecake', description: 'New York style with berry compote' },
-        { name: 'Chocolate Cake', description: 'Rich chocolate layer cake' },
-        { name: 'Ice Cream', description: 'Vanilla, chocolate, or strawberry' }
-      ]
+      'Bruschetta': 'Toasted bread with tomatoes and basil',
+      'Calamari': 'Crispy fried squid with marinara',
+      'Wings': 'Buffalo or BBQ sauce',
+      'Spinach Dip': 'Creamy spinach dip with tortilla chips',
+      'Mozzarella Sticks': 'Breaded mozzarella with marinara',
+      'Grilled Salmon': 'Atlantic salmon with lemon herb butter',
+      'Ribeye Steak': '12oz ribeye with garlic mashed potatoes',
+      'Chicken Parmesan': 'Breaded chicken with marinara and mozzarella',
+      'Pasta Primavera': 'Fresh vegetables with penne pasta',
+      'Fish & Chips': 'Beer-battered cod with fries',
+      'Burger': 'Angus beef with lettuce, tomato, onion',
+      'Tiramisu': 'Classic Italian dessert',
+      'Cheesecake': 'New York style with berry compote',
+      'Chocolate Cake': 'Rich chocolate layer cake',
+      'Ice Cream': 'Vanilla, chocolate, or strawberry'
     },
     pizza: {
-      'Pizzas': [
-        { name: 'Margherita', description: 'Tomato sauce, mozzarella, fresh basil' },
-        { name: 'Pepperoni', description: 'Classic pepperoni with mozzarella' },
-        { name: 'Supreme', description: 'Pepperoni, sausage, peppers, onions, mushrooms' },
-        { name: 'Hawaiian', description: 'Ham and pineapple' },
-        { name: 'Meat Lovers', description: 'Pepperoni, sausage, bacon, ham' }
-      ],
-      'Appetizers': [
-        { name: 'Garlic Bread', description: 'Fresh bread with garlic butter' },
-        { name: 'Caesar Salad', description: 'Romaine lettuce with Caesar dressing' },
-        { name: 'Wings', description: 'Buffalo or BBQ sauce' }
-      ]
+      'Margherita': 'Tomato sauce, mozzarella, fresh basil',
+      'Pepperoni': 'Classic pepperoni with mozzarella',
+      'Supreme': 'Pepperoni, sausage, peppers, onions, mushrooms',
+      'Hawaiian': 'Ham and pineapple',
+      'Meat Lovers': 'Pepperoni, sausage, bacon, ham',
+      'Garlic Bread': 'Fresh bread with garlic butter',
+      'Caesar Salad': 'Romaine lettuce with Caesar dressing',
+      'Wings': 'Buffalo or BBQ sauce'
     },
     asian: {
-      'Appetizers': [
-        { name: 'Spring Rolls', description: 'Fresh vegetables wrapped in rice paper' },
-        { name: 'Dumplings', description: 'Steamed or fried pork dumplings' },
-        { name: 'Edamame', description: 'Steamed soybeans with sea salt' }
-      ],
-      'Main Dishes': [
-        { name: 'Kung Pao Chicken', description: 'Spicy chicken with peanuts' },
-        { name: 'Sweet and Sour Pork', description: 'Battered pork with sweet and sour sauce' },
-        { name: 'Beef and Broccoli', description: 'Tender beef with fresh broccoli' },
-        { name: 'Fried Rice', description: 'Wok-fried rice with egg and vegetables' },
-        { name: 'Lo Mein', description: 'Soft noodles with vegetables' }
-      ]
+      'Spring Rolls': 'Fresh vegetables wrapped in rice paper',
+      'Dumplings': 'Steamed or fried pork dumplings',
+      'Edamame': 'Steamed soybeans with sea salt',
+      'Kung Pao Chicken': 'Spicy chicken with peanuts',
+      'Sweet and Sour Pork': 'Battered pork with sweet and sour sauce',
+      'Beef and Broccoli': 'Tender beef with fresh broccoli',
+      'Fried Rice': 'Wok-fried rice with egg and vegetables',
+      'Lo Mein': 'Soft noodles with vegetables'
     }
   };
   
@@ -784,21 +910,15 @@ function generateMenuByType(restaurant) {
   
   const selectedTemplate = menuTemplates[category];
   
-  // Add some randomization to make it more realistic
-  const menu = {};
-  for (const [categoryName, items] of Object.entries(selectedTemplate)) {
-    menu[categoryName] = items.map(item => ({
-      ...item,
-      available: Math.random() > 0.05, // 95% chance of being available
-      popular: Math.random() > 0.7, // 30% chance of being popular
-      spicy: category === 'asian' && Math.random() > 0.6 // 40% chance of being spicy for Asian food
-    }));
-  }
+  // Template menus are now in dictionary format: menu[item_name] = description
+  const menu = { ...selectedTemplate };
   
   return {
     restaurantId: restaurant.id,
     restaurantName: name,
     menuType: category,
+    source: 'template-based',
+    reviewsAnalyzed: 0,
     lastUpdated: new Date().toISOString(),
     menu: menu
   };
@@ -810,6 +930,8 @@ function generateGenericMenu() {
     restaurantId: 'unknown',
     restaurantName: 'Restaurant',
     menuType: 'generic',
+    source: 'fallback-generic',
+    reviewsAnalyzed: 0,
     lastUpdated: new Date().toISOString(),
     menu: {
       'Popular Items': [
@@ -988,47 +1110,47 @@ function cosineSimilarity(vecA, vecB) {
 // Route to save user preferences with likes/dislikes structure
 app.post('/api/preferences', async (req, res) => {
   try {
-    const { userId, restaurantId, likes, dislikes, restaurantName } = req.body;
+    const { userId, restaurantId, restaurantName, selectedItems, tasteProfile } = req.body;
     
-    // Validate required fields
-    if (!userId || !restaurantId || (!likes && !dislikes)) {
+    if (!userId || !restaurantId || !restaurantName) {
       return res.status(400).json({ 
         error: 'Missing required fields',
-        details: 'userId, restaurantId, and either likes or dislikes are required'
+        details: 'userId, restaurantId, and restaurantName are required'
       });
     }
     
-    console.log('💾 Backend: Saving user preferences:', {
-      userId,
-      restaurantId,
-      restaurantName,
-      likesCount: likes?.length || 0,
-      dislikesCount: dislikes?.length || 0
-    });
+    console.log('💾 Backend: Saving preferences for user:', userId);
+    console.log('🏪 Backend: Restaurant:', restaurantName);
+    console.log('📝 Backend: Selected items:', selectedItems?.length || 0);
+    console.log('👅 Backend: Taste profile:', tasteProfile);
     
-    // Initialize user preferences structure
+    // Initialize user preferences if not exists
     if (!userPreferences[userId]) {
       userPreferences[userId] = {};
     }
     
-    // Store preferences with likes/dislikes structure
-    userPreferences[userId][restaurantId] = {
-      restaurantName,
-      likes: likes || [],
-      dislikes: dislikes || [],
-      timestamp: new Date().toISOString()
-    };
+    // Store preferences per restaurant with 2D array structure:
+    // [0] = likes array, [1] = dislikes array
+    userPreferences[userId][restaurantId] = [
+      tasteProfile?.likes || [],
+      tasteProfile?.dislikes || []
+    ];
     
-    // Save user preferences to Firestore
-    await saveUserPreferencesToFirestore(userId, userPreferences[userId]);
+    // Save to Firestore for persistence
+    try {
+      await saveUserPreferencesToFirestore(userId, userPreferences[userId]);
+    } catch (firestoreError) {
+      console.error('⚠️ Backend: Failed to save to Firestore:', firestoreError.message);
+    }
     
-    // Generate restaurant embedding if not exists
-    await generateRestaurantEmbedding(restaurantId, restaurantName);
+    // Generate or update user embedding based on preferences
+    try {
+      await updateUserEmbedding(userId, tasteProfile);
+    } catch (embeddingError) {
+      console.error('⚠️ Backend: Failed to update user embedding:', embeddingError.message);
+    }
     
-    // Update user embedding with new preferences
-    await updateUserEmbedding(userId, restaurantId, likes || [], dislikes || []);
-    
-    console.log('✅ Backend: User preferences and embeddings updated successfully');
+    console.log('✅ Backend: Preferences saved successfully');
     
     res.json({
       success: true,
@@ -1363,6 +1485,118 @@ app.use((error, req, res, next) => {
     details: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
   });
 });
+
+// Load menu from Firestore cache
+async function loadMenuFromFirestore(restaurantId) {
+  try {
+    const menuDoc = await db.collection('menus').doc(restaurantId).get();
+    if (menuDoc.exists) {
+      console.log('📖 Backend: Loaded cached menu from Firestore');
+      return menuDoc.data();
+    }
+    return null;
+  } catch (error) {
+    console.error('❌ Backend: Error loading menu from Firestore:', error.message);
+    return null;
+  }
+}
+
+// Save menu to Firestore cache
+async function saveMenuToFirestore(restaurantId, menuData) {
+  try {
+    await db.collection('menus').doc(restaurantId).set(menuData);
+    console.log('💾 Backend: Saved menu to Firestore cache');
+  } catch (error) {
+    console.error('❌ Backend: Error saving menu to Firestore:', error.message);
+  }
+}
+
+// Extract new menu items from recent reviews
+async function extractNewMenuItems(newReviews, existingMenu, restaurantName, restaurantTypes) {
+  try {
+    const reviewTexts = newReviews
+      .map(review => review.text?.text || '')
+      .filter(text => text.length > 0)
+      .join(' ');
+    
+    if (reviewTexts.length === 0) return null;
+    
+    // Get existing menu items for comparison
+    const existingItems = [];
+    Object.values(existingMenu).forEach(category => {
+      if (Array.isArray(category)) {
+        category.forEach(item => existingItems.push(item.name.toLowerCase()));
+      }
+    });
+    
+    const prompt = `Analyze these recent restaurant reviews and extract ONLY NEW menu items that are NOT already in the existing menu.
+
+Restaurant: ${restaurantName}
+Type: ${restaurantTypes.join(', ')}
+
+Existing Menu Items: ${existingItems.join(', ')}
+
+Recent Reviews:
+${reviewTexts}
+
+Extract ONLY new menu items mentioned in reviews that are NOT in the existing menu. Return JSON:
+{
+  "Category Name": [
+    {
+      "name": "New Item Name",
+      "description": "Brief description (max 30 words)",
+      "available": true,
+      "popular": false,
+      "recommended": true/false
+    }
+  ]
+}
+
+Rules:
+1. Only include items NOT in existing menu
+2. Only items explicitly mentioned in reviews
+3. Keep descriptions under 30 words
+4. Return empty object {} if no new items found
+
+Return only JSON, no additional text.`;
+    
+    const response = await cohere.generate({
+      model: 'command',
+      prompt: prompt,
+      max_tokens: 800,
+      temperature: 0.2,
+      stop_sequences: []
+    });
+    
+    const generatedText = response.generations[0].text.trim();
+    const newMenuData = JSON.parse(generatedText);
+    
+    console.log('🔍 Backend: Extracted new items:', Object.keys(newMenuData).length, 'categories');
+    return newMenuData;
+    
+  } catch (error) {
+    console.error('❌ Backend: Error extracting new menu items:', error.message);
+    return null;
+  }
+}
+
+// Merge new menu items with existing menu
+function mergeMenuItems(existingMenu, newItems) {
+  const merged = { ...existingMenu };
+  
+  Object.keys(newItems).forEach(category => {
+    if (merged[category]) {
+      // Add new items to existing category
+      merged[category] = [...merged[category], ...newItems[category]];
+    } else {
+      // Create new category
+      merged[category] = newItems[category];
+    }
+  });
+  
+  console.log('🔄 Backend: Merged menu items');
+  return merged;
+}
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

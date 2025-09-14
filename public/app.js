@@ -10,6 +10,9 @@ import {
     getAuthenticatedUser
 } from './auth.js';
 
+// Import Firebase functions
+import { getCurrentUser } from './firebase-config.js';
+
 let currentRestaurant = null;
 let selectedMenuItems = [];
 let currentLocation = null;
@@ -604,8 +607,7 @@ function displayMenuData(menuData, restaurant) {
     menuHtml += `
         <div class="mt-4 pt-3 border-top text-center">
             <button class="btn btn-primary btn-lg" onclick="saveUserPreferences('${restaurant.id}', '${restaurant.name}')">
-                <i class="material-icons me-2" style="font-size: 18px;">save</i>
-                Save My Taste Preferences
+                save
             </button>
             <p class="small text-muted mt-2">Rate items above to find dining companions with similar tastes!</p>
         </div>
@@ -680,8 +682,7 @@ function displaySampleMenu(restaurant) {
     menuHtml += `
         <div class="mt-3 text-center">
             <button class="btn btn-primary" onclick="saveUserPreferences('${restaurant.id}', '${restaurant.name}')">
-                <i class="material-icons me-1" style="font-size: 16px;">save</i>
-                Save My Preferences
+                save
             </button>
         </div>
     `;
@@ -718,6 +719,10 @@ window.rateMenuItem = async function(item, action, buttonElement) {
     const likeBtn = buttonGroup.querySelector('.like-btn');
     const dislikeBtn = buttonGroup.querySelector('.dislike-btn');
     
+    // Check current state BEFORE modifying arrays
+    const alreadyLiked = userTasteProfile.likes.includes(item);
+    const alreadyDisliked = userTasteProfile.dislikes.includes(item);
+    
     // Remove item from both arrays first
     userTasteProfile.likes = userTasteProfile.likes.filter(i => i !== item);
     userTasteProfile.dislikes = userTasteProfile.dislikes.filter(i => i !== item);
@@ -728,15 +733,32 @@ window.rateMenuItem = async function(item, action, buttonElement) {
     dislikeBtn.classList.remove('btn-danger');
     dislikeBtn.classList.add('btn-outline-danger');
     
-    // Add to appropriate array and update button state
     if (action === 'like') {
-        userTasteProfile.likes.push(item);
-        likeBtn.classList.remove('btn-outline-success');
-        likeBtn.classList.add('btn-success');
+        if (alreadyLiked) {
+            // Un-like: keep removed from likes
+            console.log('👤 Frontend: Un-liked item');
+            showToast('Removed from liked items', 'info');
+        } else {
+            // Like: add to likes
+            userTasteProfile.likes.push(item);
+            likeBtn.classList.remove('btn-outline-success');
+            likeBtn.classList.add('btn-success');
+            console.log('👤 Frontend: Liked item');
+            showToast('Added to liked items!', 'success');
+        }
     } else if (action === 'dislike') {
-        userTasteProfile.dislikes.push(item);
-        dislikeBtn.classList.remove('btn-outline-danger');
-        dislikeBtn.classList.add('btn-danger');
+        if (alreadyDisliked) {
+            // Un-dislike: keep removed from dislikes
+            console.log('👤 Frontend: Un-disliked item');
+            showToast('Removed from disliked items', 'info');
+        } else {
+            // Dislike: add to dislikes
+            userTasteProfile.dislikes.push(item);
+            dislikeBtn.classList.remove('btn-outline-danger');
+            dislikeBtn.classList.add('btn-danger');
+            console.log('👤 Frontend: Disliked item');
+            showToast('Added to disliked items', 'warning');
+        }
     }
     
     console.log('👤 Frontend: Updated taste profile:', userTasteProfile);
@@ -759,7 +781,7 @@ function getCurrentRestaurant() {
 
 // Auto-save user preferences (called automatically when rating items)
 async function saveUserPreferencesAuto(restaurantId, restaurantName) {
-    const user = auth.currentUser;
+    const user = await getCurrentUser();
     if (!user) return;
     
     try {
@@ -832,8 +854,8 @@ function showToast(message, type = 'info') {
 }
 
 // Save user preferences to backend
-async function saveUserPreferences(restaurantId, restaurantName) {
-    const user = auth.currentUser;
+window.saveUserPreferences = async function(restaurantId, restaurantName) {
+    const user = await getCurrentUser();
     if (!user) {
         alert('Please sign in to save preferences');
         return;
@@ -855,7 +877,7 @@ async function saveUserPreferences(restaurantId, restaurantName) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                userId: currentUser.uid,
+                userId: user.uid,
                 restaurantId: restaurantId,
                 restaurantName: restaurantName,
                 selectedItems: allSelectedItems,
