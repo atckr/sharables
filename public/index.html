@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sharables - Find Your Food Match</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Login Section -->
+    <div id="loginSection" style="display: flex;" class="d-flex align-items-center justify-content-center min-vh-100 bg-light">
+        <div class="container">
+            <div class="row justify-content-center">
+                <div class="col-md-6 col-lg-5">
+                    <div class="card shadow-sm">
+                        <div class="card-body p-5 text-center">
+                            <div class="mb-4">
+                                <h1 class="h2 mb-3">
+                                    <i class="material-icons fs-1 text-primary">restaurant</i>
+                                    <br>Sharables
+                                </h1>
+                                <p class="text-muted">Find restaurants and connect with people who share your taste</p>
+                            </div>
+                            <div class="mb-4">
+                                <h3 class="h4 mb-3">Welcome to Sharables</h3>
+                                <p class="text-muted mb-4">Sign in with Google to discover restaurants and find dining companions with similar tastes.</p>
+                                <button id="googleSignInBtn" class="btn btn-outline-primary btn-lg w-100">
+                                    <img src="https://developers.google.com/identity/images/g-logo.png" alt="Google" width="20" height="20" class="me-2">
+                                    Sign in with Google
+                                </button>
+                            </div>
+                            <div class="row text-center">
+                                <div class="col-4">
+                                    <i class="material-icons text-primary mb-2">location_on</i>
+                                    <small class="d-block text-muted">Find nearby</small>
+                                </div>
+                                <div class="col-4">
+                                    <i class="material-icons text-primary mb-2">favorite</i>
+                                    <small class="d-block text-muted">Save preferences</small>
+                                </div>
+                                <div class="col-4">
+                                    <i class="material-icons text-primary mb-2">people</i>
+                                    <small class="d-block text-muted">Connect</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App (hidden until authenticated) -->
+    <div id="mainApp" class="container-fluid" style="display: none;">
+        <nav class="navbar navbar-expand-lg navbar-light bg-white shadow-sm mb-4">
+            <div class="container">
+                <a class="navbar-brand" href="#">
+                    <i class="material-icons text-primary me-2">restaurant</i>
+                    <strong>Sharables</strong>
+                </a>
+                <div class="navbar-nav ms-auto">
+                    <div id="userInfo" class="navbar-text me-3"></div>
+                    <button id="signOutBtn" class="btn btn-outline-secondary btn-sm" style="display: none;">
+                        <i class="material-icons me-1" style="font-size: 16px;">logout</i>
+                        Sign Out
+                    </button>
+                </div>
+            </div>
+        </nav>
+
+        <div class="main-content">
+            <!-- Map Section -->
+            <div class="map-section">
+                <div class="container-fluid">
+            <div class="row mb-4">
+                <div class="col-12">
+                    <div class="card">
+                        <div class="card-body">
+                            <h5 class="card-title mb-3">
+                                <i class="material-icons me-2">search</i>
+                                Find Restaurants Near You
+                            </h5>
+                            <div class="row g-3">
+                                <div class="col-md-8">
+                                    <div class="input-group">
+                                        <input type="text" id="locationInput" class="form-control" placeholder="Enter location or use current location">
+                                        <button id="currentLocationBtn" class="btn btn-primary" type="button">
+                                            <i class="material-icons me-1">my_location</i>
+                                            Current Location
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <select id="distanceSelect" class="form-select">
+                                        <option value="500">0.5 km</option>
+                                        <option value="1000" selected>1 km</option>
+                                        <option value="2000">2 km</option>
+                                        <option value="5000">5 km</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row">
+                <!-- Restaurant List Column -->
+                <div class="col-lg-6">
+                    <!-- Loading State -->
+                    <div id="loadingSection" class="mb-4" style="display: none;">
+                        <div class="card">
+                            <div class="card-body text-center py-5">
+                                <div class="spinner-border text-primary mb-3" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <p class="text-muted">Finding restaurants near you...</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Restaurant Results -->
+                    <div id="restaurantResults" style="display: none;">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="mb-0">
+                                    <i class="material-icons me-2">restaurant_menu</i>
+                                    Nearby Restaurants
+                                </h5>
+                            </div>
+                            <div class="card-body p-0" style="max-height: 600px; overflow-y: auto;">
+                                <div id="restaurantsList" class="list-group list-group-flush"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- No Results -->
+                    <div id="noResults" style="display: none;">
+                        <div class="card">
+                            <div class="card-body text-center py-5">
+                                <i class="material-icons text-muted mb-3" style="font-size: 3rem;">search_off</i>
+                                <h5>No restaurants found</h5>
+                                <p class="text-muted">Try expanding your search radius or changing your location.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Restaurant Details Sidebar -->
+                <div class="col-lg-6">
+                    <div id="restaurantSidebar" class="card" style="display: none;">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0" id="sidebarRestaurantName">Restaurant Details</h5>
+                            <button type="button" class="btn-close" id="closeSidebar"></button>
+                        </div>
+                        <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                            <!-- Restaurant Photos -->
+                            <div id="restaurantPhotos" class="mb-4"></div>
+                            
+                            <!-- Restaurant Info -->
+                            <div id="sidebarRestaurantInfo" class="mb-4">
+                                <div class="text-center py-4">
+                                    <div class="spinner-border text-primary mb-3" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <p class="text-muted">Loading restaurant details...</p>
+                                </div>
+                            </div>
+                            
+                            <!-- Menu Section -->
+                            <div id="sidebarMenuSection" style="display: none;">
+                                <h6 class="mb-3">
+                                    <i class="material-icons me-2">restaurant_menu</i>
+                                    Menu Items
+                                </h6>
+                                <div id="sidebarMenuItems"></div>
+                                
+                                <!-- User Preferences -->
+                                <div class="mt-4 pt-4 border-top">
+                                    <button type="button" class="btn btn-primary w-100" id="sidebarSubmitBtn">
+                                        <i class="material-icons me-1" style="font-size: 16px;">people</i>
+                                        Find My Dining Matches!
+                                    </button>
+                                    <p class="small text-muted mt-2 text-center">Based on your taste preferences and AI matching</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+                </div>
+            </div>
+
+            <!-- Restaurant Details Modal -->
+            <div class="modal fade" id="restaurantModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title" id="restaurantName">Restaurant Details</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="restaurantInfo">
+                                <p class="text-muted">Loading restaurant details...</p>
+                            </div>
+                            <div id="menuSection" style="display: none;">
+                                <h6 class="mt-4 mb-3">Menu Items</h6>
+                                <div id="menuItems" class="row"></div>
+                                <div class="mt-4">
+                                    <div class="mb-3">
+                                        <label for="userIdInput" class="form-label">Your Name</label>
+                                        <input type="text" id="userIdInput" class="form-control" placeholder="Enter your name">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            <button type="button" class="btn btn-primary" id="submitPreferencesBtn">
+                                <i class="material-icons me-1" style="font-size: 16px;">people</i>
+                                Find My Dining Matches!
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        <!-- Matches Modal -->
+        <div class="modal fade" id="matchesModal" tabindex="-1">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Your Dining Matches</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="matchesContent">
+                            <div class="text-center py-4">
+                                <div class="spinner-border text-primary mb-3" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <p class="text-muted">Finding your perfect dining matches...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div class="loading" id="loadingSpinner">
+            <div class="mdc-circular-progress" style="width:48px;height:48px;" role="progressbar" aria-label="Loading..." aria-valuemin="0" aria-valuemax="1">
+                <div class="mdc-circular-progress__determinate-container">
+                    <svg class="mdc-circular-progress__determinate-circle-graphic" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                        <circle class="mdc-circular-progress__determinate-track" cx="24" cy="24" r="18" stroke-width="4"/>
+                        <circle class="mdc-circular-progress__determinate-circle" cx="24" cy="24" r="18" stroke-dasharray="113.097" stroke-dashoffset="113.097" stroke-width="4"/>
+                    </svg>
+                </div>
+                <div class="mdc-circular-progress__indeterminate-container">
+                    <div class="mdc-circular-progress__spinner-layer">
+                        <div class="mdc-circular-progress__circle-clipper mdc-circular-progress__circle-left">
+                            <svg class="mdc-circular-progress__indeterminate-circle-graphic" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="24" cy="24" r="18" stroke-dasharray="113.097" stroke-dashoffset="56.549" stroke-width="4"/>
+                            </svg>
+                        </div>
+                        <div class="mdc-circular-progress__gap-patch">
+                            <svg class="mdc-circular-progress__indeterminate-circle-graphic" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="24" cy="24" r="18" stroke-dasharray="113.097" stroke-dashoffset="56.549" stroke-width="3.2"/>
+                            </svg>
+                        </div>
+                        <div class="mdc-circular-progress__circle-clipper mdc-circular-progress__circle-right">
+                            <svg class="mdc-circular-progress__indeterminate-circle-graphic" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                                <circle cx="24" cy="24" r="18" stroke-dasharray="113.097" stroke-dashoffset="56.549" stroke-width="4"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- <p>Finding your perfect dining matches...</p> -->
+        </div>
+    </div>
+
+    <!-- Bootstrap JavaScript -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Firebase and Authentication -->
+    <script type="module">
+        import { initAuth, handleGoogleSignIn, handleSignOut } from './auth.js';
+        
+        // Initialize authentication when DOM loads
+        document.addEventListener('DOMContentLoaded', () => {
+            initAuth();
+            
+            // Set up authentication event listeners
+            const googleSignInBtn = document.getElementById('googleSignInBtn');
+            if (googleSignInBtn) {
+                googleSignInBtn.addEventListener('click', handleGoogleSignIn);
+            }
+            
+            const signOutBtn = document.getElementById('signOutBtn');
+            if (signOutBtn) {
+                signOutBtn.addEventListener('click', handleSignOut);
+            }
+        });
+    </script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>

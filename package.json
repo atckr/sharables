@@ -1,0 +1,31 @@
+{
+  "name": "social-diner-matching-app",
+  "version": "1.0.0",
+  "description": "A social app that matches users based on dining preferences and restaurant choices",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "axios": "^1.5.0",
+    "cohere-ai": "^7.19.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "firebase": "^12.2.1",
+    "firebase-admin": "^13.5.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "social",
+    "dining",
+    "restaurant",
+    "matching",
+    "maps"
+  ],
+  "author": "",
+  "license": "MIT"
+}
