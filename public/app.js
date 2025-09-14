@@ -799,8 +799,8 @@ async function saveUserPreferencesAuto(restaurantId, restaurantName) {
                 userId: user.uid,
                 restaurantId: restaurantId,
                 restaurantName: restaurantName,
-                likes: userTasteProfile.likes,
-                dislikes: userTasteProfile.dislikes
+                selectedItems: [...userTasteProfile.likes, ...userTasteProfile.dislikes],
+                tasteProfile: userTasteProfile
             })
         });
         
@@ -894,9 +894,9 @@ window.saveUserPreferences = async function(restaurantId, restaurantName) {
         
         // Show success message and potential matches
         if (result.matches && result.matches.length > 0) {
-            showMatchesModal(result.matches);
+            showMatchesModal(result.matches, result.restaurantInfo);
         } else {
-            alert(`Preferences saved! You've rated ${allSelectedItems.length} items.`);
+            showToast(`Preferences saved! You've rated ${allSelectedItems.length} items.`, 'success');
         }
         
     } catch (error) {
@@ -910,8 +910,8 @@ async function submitPreferences() {
     console.log('⚠️ Frontend: submitPreferences is deprecated, use saveUserPreferences instead');
 }
 
-// Show matches modal
-function showMatchesModal(matches) {
+// Show matches modal with restaurant info
+function showMatchesModal(matches, restaurantInfo) {
     const modal = new bootstrap.Modal(document.getElementById('matchesModal'));
     const matchesContent = document.getElementById('matchesContent');
     
@@ -920,23 +920,47 @@ function showMatchesModal(matches) {
             <div class="text-center py-4">
                 <i class="material-icons text-muted mb-3" style="font-size: 3rem;">person_search</i>
                 <h5>No matches found</h5>
-                <p class="text-muted">Be the first to try this combination! Your preferences have been saved and others with similar tastes will be able to find you.</p>
+                <p class="text-muted">Be the first to try this combination at <strong>${restaurantInfo?.name || 'this restaurant'}</strong>! Your preferences have been saved and others with similar tastes will be able to find you.</p>
             </div>
         `;
     } else {
         matchesContent.innerHTML = `
             <div class="mb-3">
-                <h6 class="text-success">Found ${matches.length} dining companion${matches.length > 1 ? 's' : ''} with similar tastes!</h6>
+                <div class="alert alert-success" role="alert">
+                    <i class="material-icons me-2">restaurant</i>
+                    <strong>Great news!</strong> Found ${matches.length} dining companion${matches.length > 1 ? 's' : ''} with similar tastes for <strong>${restaurantInfo?.name || 'this restaurant'}</strong>!
+                </div>
             </div>
             <div class="row">
-                ${matches.map(match => `
+                ${matches.map((match, index) => `
                     <div class="col-12 mb-3">
-                        <div class="card">
+                        <div class="card border-success">
                             <div class="card-body">
-                                <h6 class="card-title">${match.userName}</h6>
-                                <p class="card-text mb-2"><strong>Restaurant:</strong> ${match.restaurantName}</p>
-                                <p class="card-text mb-2"><strong>Selected Items:</strong> ${match.selectedItems.join(', ')}</p>
-                                <small class="text-muted">${new Date(match.timestamp).toLocaleString()}</small>
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div class="flex-grow-1">
+                                        <h6 class="card-title text-success">
+                                            <i class="material-icons me-1" style="font-size: 1.2rem;">person</i>
+                                            Dining Match #${index + 1}
+                                        </h6>
+                                        <p class="card-text mb-2">
+                                            <strong><i class="material-icons me-1" style="font-size: 1rem;">restaurant_menu</i>Restaurant:</strong> 
+                                            ${match.restaurantName}
+                                        </p>
+                                        <p class="card-text mb-2">
+                                            <strong><i class="material-icons me-1" style="font-size: 1rem;">favorite</i>Similar Items:</strong> 
+                                            <span class="text-primary">${match.selectedItems.join(', ')}</span>
+                                        </p>
+                                        <div class="d-flex justify-content-between align-items-center">
+                                            <small class="text-muted">
+                                                <i class="material-icons me-1" style="font-size: 0.9rem;">schedule</i>
+                                                ${new Date(match.timestamp).toLocaleString()}
+                                            </small>
+                                            <span class="badge bg-success">
+                                                ${Math.round(match.similarity * 100)}% match
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

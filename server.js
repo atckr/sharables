@@ -115,7 +115,12 @@ async function loadUserEmbeddingFromFirestore(userId) {
 async function saveUserPreferencesToFirestore(userId, preferences) {
   if (!db) return false;
   try {
-    await db.collection(USER_PREFERENCES_COLLECTION).doc(userId).set(preferences);
+    // Convert preferences to the new Firestore structure
+    const firestoreData = {
+      restaurants: preferences
+    };
+    
+    await db.collection('users').doc(userId).set(firestoreData);
     console.log('💾 Firestore: User preferences saved for:', userId);
     return true;
   } catch (error) {
@@ -127,10 +132,12 @@ async function saveUserPreferencesToFirestore(userId, preferences) {
 async function loadUserPreferencesFromFirestore(userId) {
   if (!db) return null;
   try {
-    const doc = await db.collection(USER_PREFERENCES_COLLECTION).doc(userId).get();
+    const doc = await db.collection('users').doc(userId).get();
     if (doc.exists) {
       console.log('📋 Firestore: User preferences loaded for:', userId);
-      return doc.data();
+      const data = doc.data();
+      // Return the restaurants object to maintain compatibility
+      return data.restaurants || {};
     }
     return null;
   } catch (error) {
@@ -563,161 +570,115 @@ async function saveCachedMenu(restaurantId, menu) {
   }
 }
 
-// Generate menu using Cohere AI based on restaurant reviews
+// Generate menu using Cohere AI based on restaurant reviews (optimized for speed)
 async function generateMenuFromReviews(restaurant) {
   const name = restaurant.displayName?.text || 'Restaurant';
   const types = restaurant.types || [];
   const reviews = restaurant.reviews || [];
-  const restaurantId = restaurant.id; // This is the real Google Place ID
+  const restaurantId = restaurant.id;
   
-  console.log('🤖 Backend: Processing menu for:', name, 'ID:', restaurantId);
-  
-  try {
-    // Check if we have cached menu data
-    const cachedMenu = await loadMenuFromFirestore(restaurantId);
-    
-    if (cachedMenu) {
-      console.log('✅ Backend: Found cached menu, analyzing newest review...');
-      
-      if (reviews.length === 0) {
-        console.log('✅ Backend: No reviews available, using cached menu');
-        return cachedMenu;
-      }
-      
-      // Analyze only the newest review first for efficiency
-      const newestReview = reviews[0];
-      const newItems = await extractMenuItemsFromSingleReview(newestReview, name, types);
-      
-      if (newItems && Object.keys(newItems).length > 0) {
-        console.log('🔍 Backend: Found potential new items in newest review, checking similarity...');
-        
-        // Check if any new items are truly new using similarity matching
-        const trulyNewItems = await findTrulyNewItems(newItems, cachedMenu.menu);
-        
-        if (Object.keys(trulyNewItems).length > 0) {
-          console.log('🆕 Backend: Found truly new items, processing next 4 reviews...');
-          
-          // Process next 4 reviews for additional items
-          const additionalReviews = reviews.slice(1, 5);
-          const additionalItems = await extractMenuItemsFromReviews(additionalReviews, name, types);
-          
-          // Merge all new items
-          const allNewItems = { ...trulyNewItems, ...additionalItems };
-          const updatedMenu = { ...cachedMenu.menu, ...allNewItems };
-          
-          const menuData = {
-            restaurantId: restaurantId,
-            restaurantName: name,
-            menuType: 'ai-generated',
-            source: 'cohere-reviews-incremental',
-            reviewsAnalyzed: cachedMenu.reviewsAnalyzed + 5,
-            lastUpdated: new Date().toISOString(),
-            menu: updatedMenu
-          };
-          
-          await saveMenuToFirestore(restaurantId, menuData);
-          return menuData;
-        } else {
-          console.log('✅ Backend: No truly new items found, using cached menu');
-          return cachedMenu;
-        }
-      } else {
-        console.log('✅ Backend: No new items in newest review, using cached menu');
-        return cachedMenu;
-      }
-    }
-  } catch (error) {
-    console.log('⚠️ Backend: Cache check failed, generating fresh menu:', error.message);
-  }
-  
-  console.log('🤖 Backend: First time processing restaurant, using 5 newest reviews for efficiency');
+  console.log('🚀 Backend: Fast menu generation for:', name);
+  const startTime = Date.now();
   
   try {
-    // If we have reviews, use Cohere to extract menu items
-    if (reviews.length > 0 && COHERE_API_KEY) {
-      // For new restaurants, only use 5 newest reviews for efficiency
-      const recentReviews = reviews.slice(0, 5);
-      console.log(`📝 Backend: Processing ${recentReviews.length} reviews for initial menu extraction`);
+    // Use keyword extraction for ultra-fast menu generation
+    if (reviews.length > 0) {
+      const maxReviews = Math.min(3, reviews.length);
+      const recentReviews = reviews.slice(0, maxReviews);
+      console.log(`⚡ Backend: Processing ${maxReviews} reviews with keyword extraction`);
       
-      const menuItems = await extractMenuItemsFromReviews(recentReviews, name, types);
+      const menuItems = extractMenuItemsKeyword(recentReviews, name, types);
       
       if (menuItems && Object.keys(menuItems).length > 0) {
-        const menuData = {
+        const duration = Date.now() - startTime;
+        console.log(`🎯 Backend: Menu generated in ${duration}ms`);
+        
+        return {
           restaurantId: restaurantId,
           restaurantName: name,
-          menuType: 'ai-generated',
-          source: 'cohere-reviews-initial',
-          reviewsAnalyzed: recentReviews.length,
+          menuType: 'keyword-extracted',
+          source: 'keyword-fast',
+          reviewsAnalyzed: maxReviews,
+          generationTime: duration,
           lastUpdated: new Date().toISOString(),
           menu: menuItems
         };
-        
-        // Save to Firestore cache
-        await saveMenuToFirestore(restaurantId, menuData);
-        return menuData;
       }
     }
     
-    // Fallback to template-based generation if no reviews or Cohere fails
-    console.log('⚠️ Backend: No reviews available or Cohere failed, using template menu');
-    return generateMenuByType(restaurant);
+    // Fast template fallback
+    console.log('⚡ Backend: Using fast template menu');
+    const duration = Date.now() - startTime;
+    const templateMenu = generateMenuByType(restaurant);
+    templateMenu.generationTime = duration;
+    return templateMenu;
     
   } catch (error) {
-    console.error('💥 Backend: Error with Cohere API:', error.message);
-    // Fallback to template-based generation
-    return generateMenuByType(restaurant);
+    console.error('💥 Backend: Error with fast generation:', error.message);
+    const duration = Date.now() - startTime;
+    const templateMenu = generateMenuByType(restaurant);
+    templateMenu.generationTime = duration;
+    return templateMenu;
   }
 }
 
-// Extract menu items from reviews and return as dictionary
-async function extractMenuItemsFromReviews(reviews, restaurantName, restaurantTypes) {
+// Ultra-fast menu extraction with minimal tokens
+async function extractMenuItemsFast(reviews, restaurantName, restaurantTypes) {
   try {
+    // Combine and truncate review text for speed
     const reviewTexts = reviews
       .map(review => review.text?.text || '')
       .filter(text => text.length > 0)
-      .join(' ');
+      .join(' ')
+      .substring(0, 1000); // Limit input length for speed
     
     if (reviewTexts.length === 0) return {};
     
-    const prompt = `Analyze these restaurant reviews and extract menu items mentioned by customers.
+    // Ultra-minimal prompt for guaranteed JSON
+    const prompt = `Food items from: ${reviewTexts.substring(0, 500)}
 
-Restaurant: ${restaurantName}
-Type: ${restaurantTypes.join(', ')}
-
-Reviews:
-${reviewTexts}
-
-Extract menu items and return as a simple dictionary where key=item_name and value=description:
-{
-  "Item Name": "Brief description based on customer feedback (max 30 words)",
-  "Another Item": "Description from reviews"
-}
-
-Rules:
-1. Only items explicitly mentioned in reviews
-2. Descriptions from customer feedback only
-3. No pricing information
-4. Max 30 words per description
-5. Food/drink items only
-
-Return only JSON dictionary, no additional text.`;
+JSON format:
+{"Pizza":"Italian flatbread","Pasta":"Italian noodles"}`;
     
     const response = await cohere.generate({
-      model: 'command',
+      model: 'command-light',
       prompt: prompt,
-      max_tokens: 800,
-      temperature: 0.2,
-      stop_sequences: []
+      max_tokens: 200,
+      temperature: 0,
+      stop_sequences: ['}', '\n']
     });
     
-    const generatedText = response.generations[0].text.trim();
-    const menuItems = JSON.parse(generatedText);
+    let generatedText = response.generations[0].text.trim();
     
-    console.log('🍽️ Backend: Extracted', Object.keys(menuItems).length, 'menu items');
+    // Ensure we have valid JSON
+    if (!generatedText.startsWith('{')) {
+      generatedText = '{' + generatedText;
+    }
+    if (!generatedText.endsWith('}')) {
+      generatedText = generatedText + '}';
+    }
+    
+    let menuItems;
+    try {
+      menuItems = JSON.parse(generatedText);
+    } catch (parseError) {
+      // Extract key-value pairs manually if JSON fails
+      console.log('⚠️ Backend: Using regex fallback parsing');
+      menuItems = {};
+      const matches = generatedText.match(/"([^"]+)"\s*:\s*"([^"]+)"/g);
+      if (matches) {
+        matches.forEach(match => {
+          const [, key, value] = match.match(/"([^"]+)"\s*:\s*"([^"]+)"/);
+          menuItems[key] = value;
+        });
+      }
+    }
+    
+    console.log('⚡ Backend: Fast extracted', Object.keys(menuItems).length, 'items');
     return menuItems;
     
   } catch (error) {
-    console.error('❌ Backend: Error extracting menu items:', error.message);
+    console.error('❌ Backend: Fast extraction failed:', error.message);
     return {};
   }
 }
@@ -1112,10 +1073,26 @@ app.post('/api/preferences', async (req, res) => {
   try {
     const { userId, restaurantId, restaurantName, selectedItems, tasteProfile } = req.body;
     
+    console.log('💾 Backend: Received preference data:', {
+      userId: userId,
+      restaurantId: restaurantId,
+      restaurantName: restaurantName,
+      selectedItems: selectedItems,
+      tasteProfile: tasteProfile
+    });
+    
     if (!userId || !restaurantId || !restaurantName) {
       return res.status(400).json({ 
         error: 'Missing required fields',
         details: 'userId, restaurantId, and restaurantName are required'
+      });
+    }
+    
+    // Validate that we have taste profile data
+    if (!tasteProfile || (!tasteProfile.likes && !tasteProfile.dislikes)) {
+      return res.status(400).json({
+        error: 'Missing taste profile',
+        details: 'tasteProfile with likes or dislikes is required'
       });
     }
     
@@ -1129,16 +1106,17 @@ app.post('/api/preferences', async (req, res) => {
       userPreferences[userId] = {};
     }
     
-    // Store preferences per restaurant with 2D array structure:
-    // [0] = likes array, [1] = dislikes array
-    userPreferences[userId][restaurantId] = [
-      tasteProfile?.likes || [],
-      tasteProfile?.dislikes || []
-    ];
+    // Store preferences per restaurant with new structure:
+    // restaurantId: { likes: [...], dislikes: [...] }
+    userPreferences[userId][restaurantId] = {
+      likes: tasteProfile?.likes || [],
+      dislikes: tasteProfile?.dislikes || []
+    };
     
-    // Save to Firestore for persistence
+    // Save to Firestore for persistence with new structure
     try {
       await saveUserPreferencesToFirestore(userId, userPreferences[userId]);
+      console.log('✅ Backend: Preferences saved to Firestore successfully');
     } catch (firestoreError) {
       console.error('⚠️ Backend: Failed to save to Firestore:', firestoreError.message);
     }
@@ -1152,10 +1130,28 @@ app.post('/api/preferences', async (req, res) => {
     
     console.log('✅ Backend: Preferences saved successfully');
     
+    // Find potential matches for this user
+    const allSelectedItems = [...(tasteProfile.likes || []), ...(tasteProfile.dislikes || [])];
+    let matches = [];
+    
+    if (allSelectedItems.length > 0) {
+      try {
+        matches = await findMatches(userId, allSelectedItems);
+        console.log('🔍 Backend: Found', matches.length, 'potential matches');
+      } catch (matchError) {
+        console.error('⚠️ Backend: Error finding matches:', matchError.message);
+      }
+    }
+    
     res.json({
       success: true,
       message: 'Preferences saved successfully',
-      userPreferences: userPreferences[userId]
+      userPreferences: userPreferences[userId],
+      matches: matches,
+      restaurantInfo: {
+        id: restaurantId,
+        name: restaurantName
+      }
     });
   } catch (error) {
     console.error('💥 Backend: Error saving preferences:', error.message);
@@ -1184,42 +1180,53 @@ async function findMatches(userId, userItems) {
     console.log('🔍 Backend: Finding matches for user:', userId);
     console.log('📝 Backend: User items:', userItemsText);
 
-    // Compare with other users' preferences
-    for (const [otherUserId, preferences] of Object.entries(userPreferences)) {
-      if (otherUserId === userId) continue;
+    // Check each other user's preferences
+    for (const [otherUserId, otherPreferences] of Object.entries(userPreferences)) {
+      if (otherUserId === userId) continue; // Skip self
       
-      if (!preferences.selectedItems || preferences.selectedItems.length === 0) {
-        continue;
-      }
-
-      const otherItemsText = preferences.selectedItems.join(', ');
-      
-      try {
-        // Use Cohere to calculate similarity
-        const response = await cohere.embed({
-          texts: [userItemsText, otherItemsText],
-          model: 'embed-english-v3.0',
-          inputType: 'search_document'
-        });
-
-        if (response.embeddings && response.embeddings.length === 2) {
-          const similarity = cosineSimilarity(response.embeddings[0], response.embeddings[1]);
-          
-          console.log(`🔗 Backend: Similarity with user ${otherUserId}:`, similarity.toFixed(3));
-          
-          if (similarity > 0.7) { // Threshold for matching
-            potentialMatches.push({
-              userId: otherUserId,
-              restaurantName: preferences.restaurantName,
-              selectedItems: preferences.selectedItems,
-              similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimal places
-              timestamp: preferences.timestamp
-            });
-          }
+      // Check each restaurant for this user
+      for (const [restaurantId, preferences] of Object.entries(otherPreferences)) {
+        if (!preferences || typeof preferences !== 'object') {
+          continue; // Skip invalid preference structure
         }
-      } catch (embedError) {
-        console.error(`❌ Backend: Error calculating similarity with user ${otherUserId}:`, embedError.message);
-        continue; // Skip this comparison and continue with others
+        
+        const otherLikes = preferences.likes || [];
+        const otherDislikes = preferences.dislikes || [];
+        const otherSelectedItems = [...otherLikes, ...otherDislikes];
+        
+        if (otherSelectedItems.length === 0) {
+          continue;
+        }
+
+        const otherItemsText = otherSelectedItems.join(', ');
+        
+        try {
+          // Use Cohere to calculate similarity
+          const response = await cohere.embed({
+            texts: [userItemsText, otherItemsText],
+            model: 'embed-english-v3.0',
+            inputType: 'search_document'
+          });
+
+          if (response.embeddings && response.embeddings.length === 2) {
+            const similarity = cosineSimilarity(response.embeddings[0], response.embeddings[1]);
+            
+            console.log(`🔗 Backend: Similarity with user ${otherUserId}:`, similarity.toFixed(3));
+            
+            if (similarity > 0.7) { // Threshold for matching
+              potentialMatches.push({
+                userId: otherUserId,
+                restaurantName: preferences.restaurantName || 'Unknown Restaurant',
+                selectedItems: otherSelectedItems,
+                similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimal places
+                timestamp: preferences.timestamp || new Date().toISOString()
+              });
+            }
+          }
+        } catch (embedError) {
+          console.error(`❌ Backend: Error calculating similarity with user ${otherUserId}:`, embedError.message);
+          continue; // Skip this comparison and continue with others
+        }
       }
     }
 
@@ -1372,7 +1379,7 @@ app.get('/api/similar-users/:userId', async (req, res) => {
 // Route to get group recommendations based on multiple users
 app.post('/api/group-recommendations', async (req, res) => {
   try {
-    const { userIds, restaurantIds } = req.body;
+    const { userIds } = req.body;
     
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
       return res.status(400).json({
@@ -1380,66 +1387,122 @@ app.post('/api/group-recommendations', async (req, res) => {
       });
     }
     
-    console.log('👥 Backend: Generating group recommendations for users:', userIds);
+    console.log('👥 Backend: Finding optimal restaurant for group:', userIds);
     
-    // Get user embeddings for the group
-    const groupEmbeddings = [];
+    // Step 1: Collect all restaurants rated by group members
+    const candidateRestaurants = new Map();
+    const userPreferencesByRestaurant = new Map();
+    
     for (const userId of userIds) {
-      if (userEmbeddings[userId] && userEmbeddings[userId].averageEmbedding) {
-        groupEmbeddings.push(userEmbeddings[userId].averageEmbedding);
-      }
-    }
-    
-    if (groupEmbeddings.length === 0) {
-      return res.json({
-        success: true,
-        message: 'No users in group have taste profiles yet',
-        recommendations: []
-      });
-    }
-    
-    // Calculate average group embedding
-    const embeddingLength = groupEmbeddings[0].length;
-    const avgGroupEmbedding = new Array(embeddingLength).fill(0);
-    
-    for (const embedding of groupEmbeddings) {
-      for (let i = 0; i < embeddingLength; i++) {
-        avgGroupEmbedding[i] += embedding[i];
-      }
-    }
-    
-    for (let i = 0; i < embeddingLength; i++) {
-      avgGroupEmbedding[i] /= groupEmbeddings.length;
-    }
-    
-    // Find restaurants that match the group's taste profile
-    const restaurantRecommendations = [];
-    
-    for (const [restaurantId, restaurantData] of Object.entries(restaurantEmbeddings)) {
-      if (restaurantIds && !restaurantIds.includes(restaurantId)) continue;
+      if (!userPreferences[userId]) continue;
       
-      const similarity = cosineSimilarity(avgGroupEmbedding, restaurantData.embedding);
-      
-      if (similarity > 0.2) { // Threshold for group recommendations
-        restaurantRecommendations.push({
+      // Get all restaurants this user has rated
+      for (const [restaurantId, preferences] of Object.entries(userPreferences[userId])) {
+        if (!preferences.likes && !preferences.dislikes) continue;
+        
+        const allItems = [...(preferences.likes || []), ...(preferences.dislikes || [])];
+        if (allItems.length === 0) continue;
+        
+        // Add to candidate restaurants
+        if (!candidateRestaurants.has(restaurantId)) {
+          candidateRestaurants.set(restaurantId, {
+            restaurantId,
+            ratedByUsers: new Set(),
+            totalRatings: 0
+          });
+        }
+        
+        candidateRestaurants.get(restaurantId).ratedByUsers.add(userId);
+        candidateRestaurants.get(restaurantId).totalRatings++;
+        
+        // Store user preferences for this restaurant
+        const key = `${userId}-${restaurantId}`;
+        userPreferencesByRestaurant.set(key, {
+          userId,
           restaurantId,
-          restaurantName: restaurantData.restaurantName,
-          similarity: similarity,
-          description: restaurantData.description
+          likes: preferences.likes || [],
+          dislikes: preferences.dislikes || [],
+          allItems
         });
       }
     }
     
-    // Sort by similarity
-    restaurantRecommendations.sort((a, b) => b.similarity - a.similarity);
+    if (candidateRestaurants.size === 0) {
+      return res.json({
+        success: true,
+        message: 'No restaurants have been rated by group members yet',
+        recommendations: []
+      });
+    }
     
-    console.log(`✅ Backend: Generated ${restaurantRecommendations.length} group recommendations`);
+    console.log(`🎯 Backend: Found ${candidateRestaurants.size} candidate restaurants`);
+    
+    // Step 2: Calculate optimal restaurant using nearest neighbor approach
+    const restaurantScores = [];
+    
+    for (const [restaurantId, candidateData] of candidateRestaurants) {
+      // Calculate average distance from this restaurant to each group member's preferences
+      let totalDistance = 0;
+      let validDistances = 0;
+      
+      for (const userId of userIds) {
+        const key = `${userId}-${restaurantId}`;
+        const userRestaurantPrefs = userPreferencesByRestaurant.get(key);
+        
+        if (!userRestaurantPrefs) continue; // User hasn't rated this restaurant
+        
+        // Get user's overall embedding for comparison
+        if (userEmbeddings[userId] && userEmbeddings[userId].averageEmbedding) {
+          // Get restaurant embedding if available
+          if (restaurantEmbeddings[restaurantId] && restaurantEmbeddings[restaurantId].embedding) {
+            const similarity = cosineSimilarity(
+              userEmbeddings[userId].averageEmbedding,
+              restaurantEmbeddings[restaurantId].embedding
+            );
+            
+            // Convert similarity to distance (1 - similarity)
+            const distance = 1 - similarity;
+            totalDistance += distance;
+            validDistances++;
+          }
+        }
+      }
+      
+      if (validDistances === 0) continue;
+      
+      // Average distance to all group members
+      const avgDistance = totalDistance / validDistances;
+      const avgSimilarity = 1 - avgDistance;
+      
+      // Bonus for restaurants rated by more group members
+      const coverageBonus = candidateData.ratedByUsers.size / userIds.length;
+      const finalScore = avgSimilarity * 0.7 + coverageBonus * 0.3;
+      
+      restaurantScores.push({
+        restaurantId,
+        restaurantName: restaurantEmbeddings[restaurantId]?.restaurantName || `Restaurant ${restaurantId}`,
+        avgDistance,
+        avgSimilarity,
+        coverageBonus,
+        finalScore,
+        ratedByUsers: Array.from(candidateData.ratedByUsers),
+        totalGroupMembers: userIds.length,
+        coverage: candidateData.ratedByUsers.size
+      });
+    }
+    
+    // Sort by final score (highest = most optimal for group)
+    restaurantScores.sort((a, b) => b.finalScore - a.finalScore);
+    
+    console.log(`✅ Backend: Found optimal restaurant from ${restaurantScores.length} candidates`);
     
     res.json({
       success: true,
-      recommendations: restaurantRecommendations.slice(0, 10), // Top 10 recommendations
+      optimalRestaurant: restaurantScores[0] || null,
+      allCandidates: restaurantScores.slice(0, 10), // Top 10 candidates
       groupSize: userIds.length,
-      usersWithProfiles: groupEmbeddings.length
+      totalCandidates: restaurantScores.length,
+      algorithm: 'nearest-neighbor'
     });
     
   } catch (error) {
